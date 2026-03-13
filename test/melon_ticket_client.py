@@ -1,18 +1,29 @@
-import requests
+# import requests
 import time
+import os
 import hashlib
 import json
 import logging
 from typing import Optional, Dict, List, Any
 from datetime import datetime
+from curl_cffi import requests
+from datetime import datetime
+
+COOKIE_FILE = "melon_cookies.json"
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def generate_melon_timestamp() -> str:
+    now = datetime.now()
+    # 格式：年月日时分秒 + 毫秒（三位）
+    return now.strftime("%Y%m%d%H%M%S") + f"{now.microsecond // 1000:03d}"
+
 class MelonTicketClient:
     def __init__(self):
         self.session = requests.Session()
+        self.session.impersonate = "chrome120"
         # 设置通用 Headers (模拟浏览器)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -35,63 +46,147 @@ class MelonTicketClient:
         # TODO: 根据文档填入基础 URL
         self.BASE_URL = "https://tkglobal.melon.com" # 示例，需替换为文档中的真实 Base URL
 
-    # ================= 步骤 1: 登录与认证 =================
+    def _save_cookies(self):
+        """将当前 Session 的 Cookie 保存到本地文件"""
+        cookies = self.session.cookies.get_dict()
+        if cookies:
+            with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f)
+            logger.info(f"💾 Cookie 已保存至 {COOKIE_FILE}")
+        else:
+            logger.warning("⚠️ 没有可保存的 Cookie")
+
+    def _load_cookies(self):
+        """从本地文件加载 Cookie 到 Session"""
+        if os.path.exists(COOKIE_FILE):
+            try:
+                with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                self.session.cookies.update(cookies)
+                logger.info(f"✅ 已从 {COOKIE_FILE} 加载 Cookie")
+                return True
+            except Exception as e:
+                logger.error(f"❌ 加载 Cookie 失败: {e}")
+                if os.path.exists(COOKIE_FILE):
+                    os.remove(COOKIE_FILE) # 删除损坏的文件
+        else:
+            logger.info("📂 未找到 Cookie 文件，需要重新登录")
+        return False
+
+    def _is_logged_in(self) -> bool:
+        """
+        验证当前 Cookie 是否有效
+        策略：访问一个需要登录才能查看的接口（例如用户信息或购票列表）
+        """
+        # 这里选择一个通常需要先登录才能访问的 URL 进行测试
+        # 注意：Melon Global 的具体 API 可能需要调整，这里用 MyPage 或类似的作为示例
+        islogin_url = "https://tkglobal.melon.com/main/ajax/isLogin.json"   
+        
+        try:
+            resp = self.session.post(islogin_url)
+            
+            # 判断逻辑：
+            # 1. 如果状态码是 200 且页面包含用户相关信息，说明登录有效
+            # 2. 如果被重定向 (302) 到登录页，说明 Cookie 失效
+            # 3. 如果返回内容包含 "login" 关键字，说明未登录
+            
+            if resp.status_code == 200 :
+                 # 尝试将响应解析为 JSON
+                json_data = resp.json()
+                
+                # 关键判断：检查 JSON 中的 result 字段
+                # 假设 {"result": 0} 代表成功/已登录
+                if json_data.get("result") == 0:
+                    logger.info("✅ Cookie 验证通过 (API 返回 result=0)，登录状态有效")
+                    return True
+                else:
+                    # result 不为 0，通常是错误码，代表未登录或 token 失效
+                    error_msg = json_data.get("message", "未知错误")
+                    logger.warning(f"⚠️ Cookie 已失效 (API 返回 result={json_data.get('result')}, 消息: {error_msg})")
+                    return False
+            else:
+                logger.warning(f"⚠️ Cookie 已失效 (状态码: {resp.status_code}, 跳转至: {resp.url})")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 验证 Cookie 时发生网络错误: {e}")
+            return False
+
+    # ================= 步骤 1: 登录与认证 (已重构) =================
     def login(self, username: str, password: str, otp_code: Optional[str] = None) -> bool:
         """
-        用户登录，获取 Auth Token (实际上是通过 Cookie 维持会话)
+        用户登录主入口：
+        1. 优先尝试使用本地 Cookie
+        2. 如果 Cookie 无效或不存在，则执行账号密码登录
         """
-        logger.info("🔐 正在执行登录...")
+        logger.info("🔐 正在检查登录状态...")
         
-        # 1. 修正 URL (保持不变，这是对的)
+        # 1. 尝试加载本地 Cookie
+        if self._load_cookies():
+            # 2. 验证 Cookie 是否有效
+            if self._is_logged_in():
+                logger.info("🚀 使用本地 Cookie 自动登录成功！跳过密码登录步骤。")
+                return True
+            else:
+                logger.warning("⚠️ 本地 Cookie 已失效，将尝试重新登录...")
+                # 可选：删除失效的 cookie 文件
+                if os.path.exists(COOKIE_FILE):
+                    os.remove(COOKIE_FILE)
+
+        # 3. 执行账号密码登录流程
+        logger.info("🔑 正在执行账号密码登录...")
         url = "https://gmember.melon.com/login/login_proc.htm"
         
-        # 2. 修正 Payload (严格对应文档字段名)
         payload = {
-            "rtnUrl": "https://tkglobal.melon.com/main/index.htm",  # 登录后跳转地址
-            "langCd": "EN",                                        # 语言设置为英文
-            "email": username,                                     # 文档要求字段：email
-            "pwd": password                                        # 文档要求字段：pwd
-            # 如果有 OTP，通常也是加在这里，例如: "otp": otp_code
+            "rtnUrl": "https://tkglobal.melon.com/main/index.htm",
+            "langCd": "EN",
+            "email": username,
+            "pwd": password
         }
         
-        # 3. 修正 Headers (显式声明 Content-Type，虽然 requests 会自动处理 form-data，但显式声明更稳妥)
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
-            # 其他必要 Headers (Referer, User-Agent 等建议保留)
             "Referer": "https://tkglobal.melon.com/login/login.htm", 
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36..."
+            "User-Agent": self.headers["User-Agent"]
         }
 
         try:
-            # 4. 关键修正：使用 data= 而不是 json=
-            # allow_redirects=True 是默认的，允许 requests 自动跟随 302 跳转
             resp = self.session.post(url, data=payload, headers=headers)
             
-            # 5. 修正响应判断逻辑
-            # 登录成功通常是 302 跳转，或者跳转后的页面状态码是 200
-            # 我们主要检查是否成功跳转到了目标页面，或者检查 Cookie 是否更新
-            
+            # 判断登录结果
             if resp.status_code == 302 or (resp.status_code == 200 and "tkglobal.melon.com" in resp.url):
-                # 检查是否有关键的 Cookie (可选，增加可靠性)
-                # 例如检查是否存在 MEMB_ID 或类似的 Session Cookie
                 if self.session.cookies.get_dict():
-                    logger.success("✅ 登录成功！Cookie 已自动保存至 Session。")
-                    logger.info(f" 当前 Cookie: {self.session.cookies.get_dict()}")
+                    logger.info("✅ 账号密码登录成功！")
+                    # 4. 登录成功后，立即保存 Cookie
+                    self._save_cookies()
+                    self._is_logged_in() # 再次验证登录状态，确保 Cookie 已生效
                     return True
                 else:
-                    logger.warning("⚠️ 收到成功响应但未获取到 Cookie，可能登录未完全生效。")
+                    logger.warning("⚠️ 收到成功响应但未获取到 Cookie，登录可能未生效。")
                     return False
             else:
-                # 如果没跳转，可能是登录失败，尝试读取返回的 HTML 中的错误信息
                 logger.error(f"❌ 登录失败。状态码: {resp.status_code}, 当前 URL: {resp.url}")
-                # 可以在这里打印 resp.text 的前 200 个字符来调试错误原因
-                # logger.debug(f"响应内容预览: {resp.text[:200]}")
+                # 调试用：打印部分响应内容
+                # logger.debug(f"响应预览: {resp.text[:200]}")
                 return False
                 
         except Exception as e:
             logger.error(f"💥 登录请求异常: {e}")
             return False
-
+    # ================= 步骤 1.3: 获取演出详情与场次 =================
+    def get_member_key_info(self) -> int:
+        """
+        获取用户的 MemberKey 和 UserId
+        这是登录后的第一步，后续接口调用都需要这个 UserId
+        """
+        url = "https://tkglobal.melon.com/member/getMemberKey.json"
+        self.member_key = None
+       
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        return self.member_key
 
     # ================= 步骤 2: 获取演出详情与场次 =================
     def get_performance_details(self, prod_id: str) -> Dict:
@@ -102,15 +197,25 @@ class MelonTicketClient:
         logger.info(f"🎭 获取演出详情: {prod_id}")
         
         # TODO: 填入文档中的演出详情接口 URL
-        url = f"{self.BASE_URL}/performance/detail"
+        url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/daylist.json"
         
         params = {
-            "prodId": prod_id
+            "callback": "scheduleList2",
+            "prodId": prod_id,
+            "pocCode": "SC0002",
+            "perfTypeCode": "GN0001",
+            "sellTypeCode": "ST0001",
+            "langCd": "EN",
+            "prodTypeCode": "PT0001",
+            "interlockTypeCode": "",
+            "v" : 1,
+            "timestamp": generate_melon_timestamp()
         }
         
         try:
             resp = self.session.get(url, params=params)
             resp.raise_for_status()
+            text = resp.text
             data = resp.json()
             
             # TODO: 解析场次列表
@@ -212,7 +317,7 @@ class MelonTicketClient:
             # TODO: 检查锁座结果
             if data.get("success"):
                 self.ticket_seat_info = data["data"] # 保存 lockId 或 seatInfo
-                logger.success("✅ 座位锁定成功！")
+                logger.info("✅ 座位锁定成功！")
                 return True
             else:
                 logger.warning(f"⚠️ 锁座失败: {data.get('message')}")
@@ -253,7 +358,7 @@ class MelonTicketClient:
             # TODO: 提取 OrderId
             if data.get("success"):
                 order_id = data["data"]["orderId"]
-                logger.success(f"🎉 订单创建成功！OrderId: {order_id}")
+                logger.info(f"🎉 订单创建成功！OrderId: {order_id}")
                 logger.info("🚀 下一步：请跳转至支付页面完成付款。")
                 return order_id
             else:
@@ -310,6 +415,6 @@ if __name__ == "__main__":
     # 配置信息
     USER = "laoguanguan"
     PASS = "guanhr2728836"
-    PROD_ID = "100000" # 替换为真实的演出 ID
+    PROD_ID = "212838" # 替换为真实的演出 ID
     
     client.run_booking_flow(USER, PASS, PROD_ID)
