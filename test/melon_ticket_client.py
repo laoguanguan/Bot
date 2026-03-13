@@ -49,6 +49,7 @@ class MelonTicketClient:
     def _save_cookies(self):
         """将当前 Session 的 Cookie 保存到本地文件"""
         cookies = self.session.cookies.get_dict()
+        logger.debug(f"💾 准备保存的完整 Cookie: {cookies}")  # ← 加这行！
         if cookies:
             with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cookies, f)
@@ -155,11 +156,10 @@ class MelonTicketClient:
             
             # 判断登录结果
             if resp.status_code == 302 or (resp.status_code == 200 and "tkglobal.melon.com" in resp.url):
-                if self.session.cookies.get_dict():
+                if self._is_logged_in():
                     logger.info("✅ 账号密码登录成功！")
                     # 4. 登录成功后，立即保存 Cookie
                     self._save_cookies()
-                    self._is_logged_in() # 再次验证登录状态，确保 Cookie 已生效
                     return True
                 else:
                     logger.warning("⚠️ 收到成功响应但未获取到 Cookie，登录可能未生效。")
@@ -413,7 +413,7 @@ if __name__ == "__main__":
     client = MelonTicketClient()
     
     # 配置信息
-    USER = "laoguanguan"
+    USER = "790877095@qq.com"
     PASS = "guanhr2728836"
     PROD_ID = "212838" # 替换为真实的演出 ID
     
