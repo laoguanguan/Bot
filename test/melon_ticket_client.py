@@ -230,7 +230,7 @@ class MelonTicketClient:
         return member_key
 
     # ================= 步骤 2: 获取演出详情与场次 =================
-    def get_performance_details(self, prod_id: str) -> Dict:
+    def get_performance_details(self, prod_id: str) -> int:
         
         self.prod_id = prod_id
         logger.info(f"🎭 获取演出详情: {prod_id}")
@@ -250,58 +250,38 @@ class MelonTicketClient:
             "timestamp": generate_melon_timestamp()
         }
         
-        # 填入文档中场次列表接口的请求参数，注意时间戳格式
-        get_timelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/timelist.json"
-        timelist_params = {
-            "callback": "scheduleList3",
-            "v": 1,
-            "prodId": prod_id,
-            "perfDay": "20260501",
-            "pocCode": "SC0002",
-            "perfTypeCode": "GN0001",
-            "sellTypeCode": "ST0001",
-            "seatCntDisplayYn": "N",
-            "langCd": "EN"
-        }
-        
-        # 填入查询座位等级列表
-        get_gradelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/gradelist.json"
-        gradelist_params = {
-            "callback": "scheduleList4",
-            "v":1,
-            "prodId": prod_id,
-            "pocCode": "SC0002",
-            "scheduleNo": "100003",
-            "perfTypeCode": "GN0001",
-            "sellTypeCode": "ST0001",
-            "langCd":"EN",
-            "seatCntDisplayYn":"N"
-        }
         
         try:
+            # 解析场次列表,获取prefDay
             datalist_resp = self.session.get(get_daylist_url, params=daylist_params)
             datalist_resp.raise_for_status()
             datalist = self.parse_jsonp("scheduleList2", datalist_resp.text)
             
+            datalistInfo = datalist.get("data")
+            prefDay = datalistInfo["perfDaylist"][0]["perfDay"] # @todo 这里默认选择第一个日期，实际使用中可能需要根据用户输入选择
+            
+            # ★ 场次编号，后续所有流程都需要
+            get_timelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/timelist.json"
+            timelist_params = {
+                "callback": "scheduleList3",
+                "v": 1,
+                "prodId": prod_id,
+                "perfDay": prefDay,
+                "pocCode": "SC0002",
+                "perfTypeCode": "GN0001",
+                "sellTypeCode": "ST0001",
+                "seatCntDisplayYn": "N",
+                "langCd": "EN"
+            }
             timelist_resp = self.session.get(get_timelist_url, params=timelist_params)
             timelist_resp.raise_for_status()
             timelist = self.parse_jsonp("scheduleList3", timelist_resp.text)
             
-            gradelist_resp = self.session.get(get_gradelist_url, params=gradelist_params)
-            gradelist_resp.raise_for_status()
-            gradelist = self.parse_jsonp("scheduleList4", gradelist_resp.text)
-            
-            # 解析场次列表
-            datalistInfo = datalist.get("data")
-            productGradeListDTO = datalist.get("productGradeListDTO")
-            resultCode = datalist.get("resultCode")
-            
             timelistInfo = timelist.get("data")
-            
-            gradelistInfo = gradelist.get("data")
-            
-            logger.info(f"✅ 演出详情获取成功！场次数量: {len(timelistInfo)}")
-            
+            scheduleNo = timelistInfo["perfTimelist"][0]["scheduleNo"]
+            self.scheduleNo = scheduleNo
+            logger.info(f"✅ 获取演出详情成功！场次编号: {scheduleNo}")
+            return scheduleNo
             
         except Exception as e:
             logger.error(f"💥 获取演出详情失败: {e}")
@@ -312,42 +292,42 @@ class MelonTicketClient:
         """
         查询当前场次的余票情况，获取可买的区域 (Area)
         """
-        if not self.perf_id:
+        if not self.prod_id:
             logger.error("❌ 未选择场次，无法查询余票")
             return []
             
-        logger.info(f"🔍 查询余票: PerfId={self.perf_id}")
+        logger.info(f"🔍 查询余票: ProdId={self.prod_id}")
         
-        # TODO: 填入文档中的余票查询接口 URL
-        url = f"{self.BASE_URL}/seat/availability"
-        
-        params = {
-            "perfId": self.perf_id,
-            "prodId": self.prod_id
+        # 填入查询座位等级列表, 获取有可用票
+        get_gradelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/gradelist.json"
+        gradelist_params = {
+            "callback": "scheduleList4",
+            "v":1,
+            "prodId": self.prod_id,
+            "pocCode": "SC0002",
+            "scheduleNo": self.scheduleNo,
+            "perfTypeCode": "GN0001",
+            "sellTypeCode": "ST0001",
+            "langCd":"EN",
+            "seatCntDisplayYn":"N"
         }
+       
         
         try:
-            resp = self.session.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            gradelist_resp = self.session.get(get_gradelist_url, params=gradelist_params)
+            gradelist_resp.raise_for_status()
+            gradelist = self.parse_jsonp("scheduleList4", gradelist_resp.text)
+            resultCode = gradelist.get("resultCode")
             
-            # TODO: 解析余票数据
-            # 假设返回结构: areas -> [{areaId, areaName, seatCount, price}]
-            areas = data["data"]["areas"]
-            
-            # 过滤有票的区域
-            available_areas = [a for a in areas if a["seatCount"] > 0]
-            
-            if available_areas:
-                logger.info(f"✅ 发现 {len(available_areas)} 个可售区域")
-                # 策略：选择第一个有票区域，或指定价格档位
-                target_area = available_areas[0]
-                self.ticket_area_id = target_area["areaId"]
-                logger.info(f"🎯 锁定区域: {target_area['areaName']} (ID: {self.ticket_area_id})")
-                return available_areas
-            else:
-                logger.warning("⚠️ 当前场次无余票")
-                return []
+            if resultCode == "-1" :
+                logger.info("⚠️ 当前场次无余票")
+                return None # 无余票返回[]可继续下次轮询
+            else :
+                gradelistInfo = gradelist.get("data")
+                self.realSetCntlk = gradelistInfo["seatGradelist"][0]["realSeatCntlk"]
+                logger.info(f"✅ 演出详情获取成功！余票: {len(self.realSetCntlk)}")
+                # 继续查询座位接口
+                return [self.realSetCntlk]
                 
         except Exception as e:
             logger.error(f"💥 查询余票失败: {e}")
@@ -436,7 +416,7 @@ class MelonTicketClient:
             return None
 
     # ================= 主流程控制 =================
-    def run_booking_flow(self, username, password, prod_id):
+    def run_booking_flow(self, username, password, prod_id, proc_id):
         """串联所有步骤"""
         # 1. 登录
         if not self.login(username, password):
@@ -445,6 +425,7 @@ class MelonTicketClient:
         self.member_key = self.get_member_key_info()  
         
         # 2. 获取场次
+        self.proc_id = proc_id
         if not self.get_performance_details(prod_id):
             return
             
@@ -452,6 +433,8 @@ class MelonTicketClient:
         max_retries = 50
         for i in range(max_retries):
             areas = self.check_ticket_availability()
+            if not areas:   # 没有余票，暂时跳出
+                return
             if areas:
                 break
             logger.info(f"⏳ 第 {i+1} 次查票，暂无余票，等待中...")
@@ -483,6 +466,8 @@ if __name__ == "__main__":
     # 配置信息
     USER = "790877095@qq.com"
     PASS = "guanhr2728836"
-    PROD_ID = "212838" # 替换为真实的演出 ID
+    # PROD_ID = "212838" # 替换为真实的演出 ID
+    PROD_ID = "212811"
+    PROC_ID = "WP19"
     
-    client.run_booking_flow(USER, PASS, PROD_ID)
+    client.run_booking_flow(USER, PASS, PROD_ID, PROC_ID)
