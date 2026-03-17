@@ -2,7 +2,7 @@
 import time
 import os
 import hashlib
-import json
+import re, json
 import logging
 from typing import Optional, Dict, List, Any
 from datetime import datetime
@@ -112,7 +112,43 @@ class MelonTicketClient:
         except Exception as e:
             logger.error(f"❌ 验证 Cookie 时发生网络错误: {e}")
             return False
-
+        
+    # 解析 jsonp 响应
+    def parse_jsonp(self, schedule_header: str, response_text: str) -> dict | None:
+        """
+        解析 JSONP 响应，提取并返回内部 JSON 数据
+        """
+        try:
+            # 使用正则匹配 scheduleList2(...) 中的内容
+            # re.DOTALL 让 . 能匹配换行符（因为 JSON 可能多行）
+            pattern = rf'{re.escape(schedule_header)}\((.*)\)'
+            match = re.search(pattern, response_text, re.DOTALL)
+            
+            if not match:
+                print("❌ 未找到 scheduleList(...) 结构")
+                return None
+                
+            json_str = match.group(1).strip()  # 去除首尾空白
+            
+            # 解析 JSON
+            data = json.loads(json_str)
+            return data
+            
+        except json.JSONDecodeError as e:
+            print(f"❌ JSON 解码失败: {e}")
+            print(f"提取出的字符串: {json_str[:200]}...")
+            return None
+        except Exception as e:
+            print(f"💥 解析出错: {e}")
+            return None
+    
+    def parse_json_timelist(self, timelist_json: json) -> Dict:
+        """
+        解析 timelist 中的演出详情信息
+        """
+        timelist_json["data"] = timelist_json.get("data", {})
+        return timelist_json
+    
     # ================= 步骤 1: 登录与认证 (已重构) =================
     def login(self, username: str, password: str, otp_code: Optional[str] = None) -> bool:
         """
@@ -173,33 +209,35 @@ class MelonTicketClient:
         except Exception as e:
             logger.error(f"💥 登录请求异常: {e}")
             return False
-    # ================= 步骤 1.3: 获取演出详情与场次 =================
+        
+    # ================= 步骤 1.1: 获取会员Key =================
     def get_member_key_info(self) -> int:
         """
         获取用户的 MemberKey 和 UserId
         这是登录后的第一步，后续接口调用都需要这个 UserId
         """
         url = "https://tkglobal.melon.com/member/getMemberKey.json"
-        self.member_key = None
-       
-        resp = self.session.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-        
-        return self.member_key
+        try:
+            resp = self.session.post(url)
+            if resp.status_code == 200 :
+                # 尝试将响应解析为 JSON
+                json_data = resp.json()
+                # 关键判断
+                member_key = json_data.get("memberKey")
+        except Exception as e:
+            logger.error(f"💥 获取 MemberKey 请求异常: {e}")  
+            return None      
+        return member_key
 
     # ================= 步骤 2: 获取演出详情与场次 =================
     def get_performance_details(self, prod_id: str) -> Dict:
-        """
-        获取演出详情，包含所有场次 (PerfId) 列表
-        """
+        
         self.prod_id = prod_id
         logger.info(f"🎭 获取演出详情: {prod_id}")
         
-        # TODO: 填入文档中的演出详情接口 URL
-        url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/daylist.json"
-        
-        params = {
+        # 填入文档中的演出详情接口 URL
+        get_daylist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/daylist.json"
+        daylist_params = {
             "callback": "scheduleList2",
             "prodId": prod_id,
             "pocCode": "SC0002",
@@ -212,30 +250,58 @@ class MelonTicketClient:
             "timestamp": generate_melon_timestamp()
         }
         
+        # 填入文档中场次列表接口的请求参数，注意时间戳格式
+        get_timelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/timelist.json"
+        timelist_params = {
+            "callback": "scheduleList3",
+            "v": 1,
+            "prodId": prod_id,
+            "perfDay": "20260501",
+            "pocCode": "SC0002",
+            "perfTypeCode": "GN0001",
+            "sellTypeCode": "ST0001",
+            "seatCntDisplayYn": "N",
+            "langCd": "EN"
+        }
+        
+        # 填入查询座位等级列表
+        get_gradelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/gradelist.json"
+        gradelist_params = {
+            "callback": "scheduleList4",
+            "v":1,
+            "prodId": prod_id,
+            "pocCode": "SC0002",
+            "scheduleNo": "100003",
+            "perfTypeCode": "GN0001",
+            "sellTypeCode": "ST0001",
+            "langCd":"EN",
+            "seatCntDisplayYn":"N"
+        }
+        
         try:
-            resp = self.session.get(url, params=params)
-            resp.raise_for_status()
-            text = resp.text
-            data = resp.json()
+            datalist_resp = self.session.get(get_daylist_url, params=daylist_params)
+            datalist_resp.raise_for_status()
+            datalist = self.parse_jsonp("scheduleList2", datalist_resp.text)
             
-            # TODO: 解析场次列表
-            # 假设返回结构中有 performanceList -> [{perfId, date, time, status}]
-            performances = data["data"]["performanceList"] 
+            timelist_resp = self.session.get(get_timelist_url, params=timelist_params)
+            timelist_resp.raise_for_status()
+            timelist = self.parse_jsonp("scheduleList3", timelist_resp.text)
             
-            # 筛选可购买的场次 (status == 'ON_SALE' 或类似)
-            available_perfs = [p for p in performances if p["status"] == "ON_SALE"]
+            gradelist_resp = self.session.get(get_gradelist_url, params=gradelist_params)
+            gradelist_resp.raise_for_status()
+            gradelist = self.parse_jsonp("scheduleList4", gradelist_resp.text)
             
-            if not available_perfs:
-                logger.warning("⚠️ 暂无可售场次")
-                return {}
+            # 解析场次列表
+            datalistInfo = datalist.get("data")
+            productGradeListDTO = datalist.get("productGradeListDTO")
+            resultCode = datalist.get("resultCode")
             
-            # 策略：选择第一个可用场次，或根据时间筛选
-            target_perf = available_perfs[0] 
-            self.perf_id = target_perf["perfId"]
-            self.place_id = target_perf.get("placeId")
+            timelistInfo = timelist.get("data")
             
-            logger.info(f"✅ 选定场次: PerfId={self.perf_id}, 时间={target_perf.get('date')}")
-            return target_perf
+            gradelistInfo = gradelist.get("data")
+            
+            logger.info(f"✅ 演出详情获取成功！场次数量: {len(timelistInfo)}")
+            
             
         except Exception as e:
             logger.error(f"💥 获取演出详情失败: {e}")
@@ -375,6 +441,8 @@ class MelonTicketClient:
         # 1. 登录
         if not self.login(username, password):
             return
+        # 1.1 获取 MemberKey
+        self.member_key = self.get_member_key_info()  
         
         # 2. 获取场次
         if not self.get_performance_details(prod_id):
