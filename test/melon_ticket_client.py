@@ -142,13 +142,70 @@ class MelonTicketClient:
             print(f"💥 解析出错: {e}")
             return None
     
-    def parse_json_timelist(self, timelist_json: json) -> Dict:
-        """
-        解析 timelist 中的演出详情信息
-        """
-        timelist_json["data"] = timelist_json.get("data", {})
-        return timelist_json
+    # 演出的详细信息接口
+    def _get_performance_detail_info(self, prodId, scheduleNo) -> Dict:
+        perform_infoProSch_url = "https://tkglobal.melon.com/tktapi/product/informProdSch.json?v=1"
+        perform_infoProSch_params = {
+            "prodId"       : prodId,
+            "pocCode"      : "SC0002",
+            "scheduleNo"   : scheduleNo,
+            "sellTypeCode" : "ST0001"
+        }
+        
+        try:
+            resp = self.session.post(perform_infoProSch_url, params=perform_infoProSch_params)
+            if resp.status_code == 200 :
+                infoProSch = resp.json() # "limitVolume" 代表每个人的限购数量
+                return infoProSch
+            else:
+                return None
+        except Exception as e: 
+            print(f"💥 获取详细信息出错: {e}")
+            return None
+        
+    # 验证演出销售状态
+    def _get_performance_sell_state(self, prodId, scheduleNo) -> bool:
+        sell_state_url = "https://tkglobal.melon.com/tktapi_poc/performance/getProdSellState.json?v=1"
+        sell_state_params = {
+            "prodId" : prodId,
+            "scheduleNo" : scheduleNo
+        }
+        try:
+            resp  = self.session.post(sell_state_url, sell_state_params)
+            if resp.status_code == 200 :
+                sellState = resp.json()
+                result = sellState["result"]
+                return result == 0
+            else:
+                print(f"❌ 无法查询到演出的销售状态")
+                return False
+        except Exception as e:
+            print(f"💥 获取演出销售信息出错: {e}")
+            return False
     
+    def _get_area_map(self) -> Dict:
+        # 重点获取座位区块[block]和区块ID(sbid)
+        area_map_url = "https://tkglobal.melon.com/tktapi/glb/product/getAreaMap.json";
+        area_map_params = {
+            "prodId": self.prod_id,
+            "scheduleNo": self.scheduleNo,
+            "pocCode":self.proc_id
+        }
+        
+        
+        return []
+    
+    def _get_seat_map(self) -> Dict:
+        seat_map_url = "https://tkglobal.melon.com/tktapi/product/seat/seatMapList.json"
+        seat_map_params = {
+            "callback":"getSeatListCallBack",
+            "prodId": self.prod_id,
+            "scheduleNo": self.scheduleNo,
+            "blockId": 478,
+            "pocCode": "SC0002",
+            "v" : 1
+        }
+        return []
     # ================= 步骤 1: 登录与认证 (已重构) =================
     def login(self, username: str, password: str, otp_code: Optional[str] = None) -> bool:
         """
@@ -252,12 +309,13 @@ class MelonTicketClient:
         
         
         try:
-            # 解析场次列表,获取prefDay
+            # 解析场次列表, 确定表演日期 prefDay
             datalist_resp = self.session.get(get_daylist_url, params=daylist_params)
             datalist_resp.raise_for_status()
             datalist = self.parse_jsonp("scheduleList2", datalist_resp.text)
             
             datalistInfo = datalist.get("data")
+            # prefDay 在后续传参中需要使用
             prefDay = datalistInfo["perfDaylist"][0]["perfDay"] # @todo 这里默认选择第一个日期，实际使用中可能需要根据用户输入选择
             
             # ★ 场次编号，后续所有流程都需要
@@ -314,6 +372,7 @@ class MelonTicketClient:
        
         
         try:
+            # 查询余票
             gradelist_resp = self.session.get(get_gradelist_url, params=gradelist_params)
             gradelist_resp.raise_for_status()
             gradelist = self.parse_jsonp("scheduleList4", gradelist_resp.text)
@@ -325,14 +384,33 @@ class MelonTicketClient:
             else :
                 gradelistInfo = gradelist.get("data")
                 self.realSetCntlk = gradelistInfo["seatGradelist"][0]["realSeatCntlk"]
-                logger.info(f"✅ 演出详情获取成功！余票: {len(self.realSetCntlk)}")
-                # 继续查询座位接口
+                logger.info(f"✅ 演出详情获取成功！余票数量: {len(self.realSetCntlk)}")
+                # 查询是否需要排队，获取排队KEY
+                if self.realSetCntlk:
+                    get_prodkey_url = "https://tkglobal.melon.com/tktapi/glb/product/prodKey.json"
+                    get_prodkey_params = {
+                        "callback":"scheduleList8",
+                        "prodId": self.prod_id,
+                        "scheduleNo": self.scheduleNo,
+                        "v":"1"
+                    }
+                    prodkey_resp = self.session.get(get_prodkey_url, params=get_prodkey_params)
+                    prodkey_data = self.parse_jsonp("scheduleList8", prodkey_resp.text)
+                    resultCode = prodkey_data["code"]
+                    prodkey = prodkey_data["key"]   # 排密钥(加密)
+                    nflActId = prodkey_data["nflActId"] # NetFunnel 活动ID
+                    trafficCtrlYn = prodkey_data["trafficCtrlYn"] # Y=需要排队 N=不需要
+                    if trafficCtrlYn == "Y":
+                    
+                    else:
+                    
                 return [self.realSetCntlk]
                 
         except Exception as e:
             logger.error(f"💥 查询余票失败: {e}")
             return []
 
+    # ================= 步骤 3.1: 获取演出的详细信息 =================
     # ================= 步骤 4: 锁定座位 (选座) =================
     def select_seats(self, seat_ids: Optional[List[str]] = None) -> bool:
         """
