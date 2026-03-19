@@ -1,0 +1,662 @@
+# Melon Ticket Global - API 接口分析文档
+
+> 分析时间: 2026-03-12
+> 数据来源: 抓包 HAR 文件 (排队取号 / 购买票 / 取消票 完整流程)
+> 目标平台: tkglobal.melon.com (PC端国际版)
+> 运营方: Kakao Entertainment
+
+---
+
+## 一、平台概况
+
+### 1.1 域名结构
+
+| 域名 | 用途 |
+|------|------|
+| `tkglobal.melon.com` | PC端国际版主站（页面渲染） |
+| `m.globalticket.melon.com` | 移动端国际版（PC访问会403或重定向） |
+| `gmember.melon.com` | 用户认证/登录系统 |
+| `cdnticket.melon.co.kr` | 静态资源CDN（座位图SVG等） |
+| `dkpg-web.payments.kakao.com` | 支付网关（Kakao Pay） |
+| `ticket.melon.com` | 韩版主站（非本项目目标） |
+
+### 1.2 关键固定参数
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `pocCode` | `SC0002` | 销售渠道代码（国际版固定值） |
+| `pocId` | `WP19` | 页面渠道标识 |
+| `langCd` | `EN` | 语言代码 |
+| `perfTypeCode` | `GN0001` | 演出类型（一般演出） |
+| `sellTypeCode` | `ST0001` | 销售类型（一般销售） |
+| `prodTypeCode` | `PT0001` | 产品类型 |
+
+### 1.3 注册限制
+
+仅支持以下邮箱域名注册: gmail.com, qq.com, yahoo.co.jp, icloud.com, outlook.com, hotmail.com
+
+---
+
+## 二、完整购票流程 (7个阶段)
+
+```
+登录 → 选择演出/场次 → 排队取号 → 选区域/座位 → 验证码 → 确认订单 → 支付
+```
+
+---
+
+## 三、API 接口详解
+
+### 阶段1: 用户认证
+
+#### 1.1 登录
+```
+POST https://gmember.melon.com/login/login_proc.htm
+Content-Type: application/x-www-form-urlencoded
+
+请求参数:
+  rtnUrl      = https://tkglobal.melon.com/main/index.htm  (登录后重定向URL)
+  langCd      = EN
+  email       = 用户邮箱
+  pwd         = 用户密码
+
+响应: HTTP 302 重定向到 rtnUrl，Set-Cookie 中包含会话信息
+```
+
+**重要**: 登录成功后浏览器会获得 Cookie，后续所有请求都需要携带这些 Cookie。
+
+#### 1.2 检查登录状态
+```
+POST https://tkglobal.melon.com/main/ajax/isLogin.json
+
+响应: {"result": 0}
+  result=0 表示已登录
+```
+
+#### 1.3 获取会员Key
+```
+POST https://tkglobal.melon.com/member/getMemberKey.json
+
+响应: {"memberKey": 1000570288}
+```
+memberKey 在后续的购票流程中会用到。
+
+---
+
+### 阶段2: 演出信息查询
+
+#### 2.1 查询演出日期列表
+```
+GET https://tkglobal.melon.com/tktapi/glb/product/schedule/daylist.json
+
+参数:
+  callback    = scheduleList2          (JSONP回调名)
+  prodId      = 212838                 (演出ID，从URL获取)
+  pocCode     = SC0002
+  perfTypeCode = GN0001
+  sellTypeCode = ST0001
+  langCd      = EN
+  prodTypeCode = PT0001
+  v           = 1
+  timestamp   = 20260311200003         (格式: yyyyMMddHHmmss)
+
+响应 (JSONP格式):
+  perfDaylist: [
+    {
+      prodId: "212838",
+      perfDay: "20260501",             // 演出日期
+      rsrvStartDt: "20260311200000",   // 开售时间
+      rsrvEndDt: "20260430165959",     // 停售时间
+      groupSch: "100003"               // 场次分组号
+    },
+    ...
+  ]
+```
+
+**捡漏关键**: 开售前 perfDaylist 为空数组，开售后才有数据。
+
+#### 2.2 查询场次时间列表
+```
+GET https://tkglobal.melon.com/tktapi/glb/product/schedule/timelist.json
+
+参数:
+  callback    = scheduleList3
+  prodId      = 212838
+  perfDay     = 20260501               // 从 daylist 获取的日期
+  pocCode     = SC0002
+  perfTypeCode = GN0001
+  sellTypeCode = ST0001
+  seatCntDisplayYn = N
+  langCd      = EN
+  v           = 1
+
+响应 (JSONP格式):
+  perfTimelist: [
+    {
+      scheduleNo: "100003",            // ★ 场次编号，后续所有流程都需要
+      perfDay: "20260501",
+      perfTime: "1900",                // 演出时间 19:00
+      cancelCloseDt: "20260430165959", // 取消截止时间
+      sellCondNo: "1",
+      rsrvStartDt: "20260311200000",
+      rsrvEndDt: "20260430165959",
+      seatPoc: "1"
+    }
+  ]
+```
+
+#### 2.3 查询座位等级列表
+```
+GET https://tkglobal.melon.com/tktapi/glb/product/schedule/gradelist.json
+
+参数:
+  callback    = scheduleList4
+  prodId      = 212838
+  pocCode     = SC0002
+  scheduleNo  = 100003                 // 从 timelist 获取
+  perfTypeCode = GN0001
+  sellTypeCodeData = ST0001
+  langCd      = EN
+  seatCntDisplayYn = N
+  v           = 1
+
+响应:
+  seatGradelist: [
+    {
+      seatGradeNo: "10009",            // 座位等级编号
+      seatGradeName: "전석",            // 座位等级名称
+      basePrice: "110000",             // 基础价格 (韩元)
+      seatCount: "10000",              // 总座位数
+      realSeatCntlk: "10000",          // ★ 实际可用座位数 (捡漏核心监控值)
+      rsrvStartDt: "20260311200000",
+      rsrvEndDt: "20260430165959"
+    }
+  ]
+```
+
+**★ 捡漏核心**: `realSeatCntlk` > 0 表示有可用票。此接口是监控的主要目标。
+
+---
+
+### 阶段3: 排队系统 (流量控制)
+
+#### 3.1 获取排队Key
+```
+GET https://tkglobal.melon.com/tktapi/glb/product/prodKey.json
+
+参数:
+  callback    = scheduleList8
+  prodId      = 212838
+  scheduleNo  = 100003
+  v           = 1
+
+响应:
+  {
+    code: "0000",
+    trafficCtrlYn: "Y",                // Y=需要排队, N=不需要
+    key: "2X1bWVXKGnqLyh4cnWoH...",   // ★ 排队密钥 (加密)
+    nflActId: "hBAQuLvqjosSkVIMMRQw"   // NetFunnel 活动ID
+  }
+```
+
+**关键发现**: 当 `trafficCtrlYn = "Y"` 时，系统使用 **NetFunnel** 虚拟排队系统。
+排队密钥 `key` 会在后续进入预订页面时作为 `chk` 参数传递。
+`nflActId` 用于 NetFunnel 的排队流程。
+
+#### 3.2 进入预订弹窗 (带排队Key)
+```
+POST https://tkglobal.melon.com/reservation/popup/onestop.htm
+
+参数 (form-urlencoded):
+  prodId       = 212771
+  pocCode      = SC0002
+  scheduleNo   = 100001
+  sellCondNo   = 
+  sellTypeCode = ST0001
+  t            =
+  tYn          = N
+  chk          = fsqbko9mJiZA2Fd2bo6d...  // ★ 排队获得的加密Key
+  langCd       = EN
+  netfunnel_key =                          // NetFunnel排队完成后的key
+
+响应: HTML页面 (预订弹窗的主框架)
+```
+
+---
+
+### 阶段4: 座位选择
+
+#### 4.1 获取演出详细信息
+```
+POST https://tkglobal.melon.com/tktapi/product/informProdSch.json?v=1
+
+参数:
+  prodId       = 212771
+  pocCode      = SC0002
+  scheduleNo   = 100001
+  sellTypeCode = ST0001
+
+响应 (重要字段):
+  {
+    code: "0000",
+    prodInform: {
+      prodId: 212771,
+      perfMainName: "QWER 1ST WORLD TOUR 〈ROCKATION : HOMECOMING〉",
+      placeCodeName: "티켓링크 라이브 아레나",  // 场馆
+      limitVolume: 4,                          // ★ 每人限购数量
+      trafficCtrlYn: "N",
+      spotRecvYn: "Y",                         // 支持现场取票
+      flplanTypeCode: "DR0002",                // 楼层方案类型
+      rsrvFee: 7000,                           // 预订手续费
+      perfStartDay: "20260320",
+      perfStartTime: "1900",
+      cancelCloseDt: "20260319165959"
+    }
+  }
+```
+
+#### 4.2 获取购买数量限制
+```
+POST https://tkglobal.melon.com/tktapi/glb/product/informLimit.json
+
+参数: prodId, pocCode, scheduleNo, sellTypeCode
+响应: { limitVolume: "4", campingYn: "N" }
+```
+
+#### 4.3 验证演出销售状态
+```
+POST https://tkglobal.melon.com/tktapi_poc/performance/getProdSellState.json?v=1
+
+参数: prodId=212771, scheduleNo=100001
+响应: { result: 0, data: "Success" }   // 0=可售
+```
+
+#### 4.4 获取区域座位数量汇总
+```
+POST https://tkglobal.melon.com/tktapi/glb/product/summary.json
+
+参数: prodId, pocCode, scheduleNo, perfDate, langCd
+响应:
+  summary: [
+    {
+      sntvList: "1,A;1,B;1,C;1,D",            // 区块列表(层,区)
+      seatGradeNo: 10007,
+      seatGradeName: "Standing seats",
+      basePrice: 154000,
+      realSeatCntlk: 0                         // ★ 可用座位数
+    },
+    {
+      sntvList: "2,23;2,24;2,25;...",
+      seatGradeNo: 10015,
+      seatGradeName: "Reserved seats",
+      basePrice: 154000,
+      realSeatCntlk: 0
+    }
+  ]
+```
+
+#### 4.5 获取区域座位地图
+```
+POST https://tkglobal.melon.com/tktapi/glb/product/getAreaMap.json
+
+参数: prodId, scheduleNo, pocCode
+响应: 包含座位区块(block)的SVG地图数据和区块ID(sbid)
+```
+
+#### 4.6 获取各区块座位明细
+```
+POST https://tkglobal.melon.com/tktapi/product/block/summary.json
+
+参数: prodId, pocCode, scheduleNo, seatGradeNo(可空=全部)
+响应:
+  summary: [
+    {
+      floorNo: "2", areaNo: "33",
+      sntv: "2,33",                            // 层+区编号
+      seatGradeNo: 10015,
+      seatGradeName: "지정석",
+      realSeatCntlk: 0                         // ★ 该区块可用座位数
+    },
+    ...
+  ]
+```
+
+**★ 捡漏核心**: 此接口可以精确到每个区块的可用票数。
+
+#### 4.7 获取区块内具体座位列表
+```
+GET https://tkglobal.melon.com/tktapi/product/seat/seatMapList.json
+
+参数:
+  callback  = getSeatListCallBack
+  prodId    = 212771
+  scheduleNo = 100001
+  blockId   = 478                              // 从 getAreaMap 获取
+  pocCode   = SC0002
+  v         = 1
+
+响应: 包含每个座位的坐标和可用状态
+```
+
+---
+
+### 阶段5: 验证码 & 座位锁定
+
+#### 5.1 验证码校验
+```
+POST https://tkglobal.melon.com/reservation/ajax/checkCaptcha.json
+
+参数:
+  userCaptStr  = KCCSJD                        // 用户输入的验证码
+  chkcapt      = zt4h704StwT7Io1sPee7xA==     // 验证码加密值
+  prodId       = 212771
+  scheduleNo   = 100001
+  pocCode      = SC0002
+  sellTypeCode = ST0001
+
+响应:
+  { CODE: "0000", DATA: "vR2RfSCagOqBGzwRi4/CO..." }
+  CODE=0000 表示验证通过，DATA 是后续使用的加密token
+```
+
+**⚠️ 重要障碍**: 验证码是自动化的主要难点，需要 OCR 或人工介入。
+
+#### 5.2 座位锁定 (prodlimit)
+```
+POST https://tkglobal.melon.com/tktapi/glb/reservation/prodlimit.json
+
+参数 (关键字段):
+  prodId, pocCode, scheduleNo, perfDate, sellTypeCode,
+  blockId      = 478,
+  sntv         = 2,33                          // 层,区
+  floorNo      = 2
+  areaNo       = 33
+  seatTypeCode = SE0001
+  jType        = I                             // I=初次
+  rsrvStep     = SAT                           // 预订步骤
+
+响应:
+  {
+    result: "0000",
+    encryptedSeatIds: "q9wlAIdaEnd...",        // ★ 加密座位ID (下一步必需)
+    interlockTid: "0"
+  }
+```
+
+#### 5.3 提交选座
+```
+POST https://tkglobal.melon.com/reservation/popup/stepTicket.htm
+
+参数:
+  prodId           = 212771
+  scheduleNo       = 100001
+  flplanTypeCode   = DR0002
+  seatTypeCode     = SE0001
+  encryptedSeatIds = q9wlAIdaEnd...            // 从 prodlimit 获取
+  seatIds          = 478_190                   // 区块_座位编号
+
+响应: HTML页面 (票种选择页面)
+```
+
+---
+
+### 阶段6: 订单确认与保存
+
+#### 6.1 获取票种信息
+```
+POST https://tkglobal.melon.com/tktapi/glb/product/tickettype.json
+
+响应 (重要字段):
+  seatGradeList: [{
+    seatGradeNo: 10015,
+    seatGradeName: "Reserved seats",
+    basePrice: 154000,
+    prodTicketTypeList: [{
+      priceNo: 10067,                          // ★ 价格编号 (下单必需)
+      priceName: "Face Price",
+      ticketTypePrice: 154000,
+      partCancelYn: "Y"
+    }]
+  }]
+```
+
+#### 6.2 价格限制检查
+```
+POST https://tkglobal.melon.com/tktapi/glb/reservation/pricelimit.json
+响应: { result: "0000", message: "정상" }
+```
+
+#### 6.3 获取配送和支付方式
+```
+POST https://tkglobal.melon.com/tktapi/glb/product/delivery.json
+
+响应 (重要字段):
+  dvCodeList: [                                // 配送方式
+    { commCode: "DV0002", codeName: "현장수령" },  // 现场取票
+    { commCode: "DV0001", codeName: "미배송" }      // 不配送
+  ],
+  cardBpList: [                                // 支付卡类型
+    { cardBpId: "FOREIGN_VISA", cardBpName: "VISA" },
+    { cardBpId: "FOREIGN_MASTER", cardBpName: "MASTER" },
+    { cardBpId: "FOREIGN_JCB", cardBpName: "JCB" },
+    { cardBpId: "FOREIGN_CHINABANK", cardBpName: "UnionPay" }
+  ]
+```
+
+#### 6.4 ★ 保存订单 (核心下单接口)
+```
+POST https://tkglobal.melon.com/tktapi/glb/reservation/save.json?v=1&callback=saveHandler
+
+参数 (form-urlencoded):
+  jType           = I                          // I=新建
+  delvyTypeCode   = DV0002                     // 配送方式 (现场取票)
+  tel             = 13642517003                // 手机号
+  email           = xxx@gmail.com              // 邮箱
+  payMethodCode   = AP0012                     // 支付方式代码
+  cardCode        = FOREIGN_CHINABANK          // 卡类型 (UnionPay)
+  cardCodeName    = UnionPay
+  autheTypeCode   = AT0005                     // 海外认证
+  cardQuota       = 12                         // 分期
+  prodId          = 212771
+  pocCode         = SC0002
+  scheduleNo      = 100001
+  rsrvVolume      = 1                          // 预订数量
+  payAmt          = 161000                     // 支付金额 (票价154000 + 手续费7000)
+  // ... 还有各种 agree 参数
+
+响应:
+  {
+    code: "0000",
+    rsrvSeq: "2026031126853079",               // ★ 预订序列号
+    payNo: "2026031125382307",                 // ★ 支付单号
+    payAmt: "161000",
+    perfMainName: "QWER 1ST WORLD TOUR ...",
+    userName: "xin chen",
+    seatInfoListWithPriceType: "[{\"priceNo\":10067,\"seatId\":\"478_190\",
+      \"gradeNm\":\"지정석\",\"seatNm\":\"2 층 33 구역 10 열 157 번\",
+      \"basePrice\":154000}]"
+  }
+```
+
+---
+
+### 阶段7: 支付
+
+#### 7.1 初始化支付
+```
+POST https://tkglobal.melon.com/reservation/ajax/payInitForm.htm?procMode=R
+
+参数: 包含 seatInfoListWithPriceType 等订单信息
+响应: 支付网关的跳转信息
+```
+
+#### 7.2 跳转支付网关
+```
+GET https://dkpg-web.payments.kakao.com/payment/v1/user/auth/start
+  ?sessionKey=ktx00Z226619b525304aaa8c48f4cf0c03cf82
+
+→ 302 重定向到 Kakao Pay 支付页面
+→ 最终到达银行卡认证页面 (INICIS)
+```
+
+---
+
+### 取消订单流程
+
+#### 查看已购票列表
+```
+GET https://tkglobal.melon.com/api/glb/reservation/listPc.json
+
+参数: rsrvCancel=RSRV, monthInterval=6, pageIndex=1, rowCount=20, langCd=EN
+```
+
+#### 查看订单详情
+```
+POST https://tkglobal.melon.com/tktapi/glb/reservation/inform.json
+
+参数: jobType=S, rsrvSeq=2026031126853031, langCd=EN
+```
+
+#### 取消检查
+```
+POST https://tkglobal.melon.com/tktapi/glb/reservation/cancelCheck.json
+
+参数: rsrvSeq, prodId, rsrvDtlNo=101, seatNo, langCd=EN
+```
+
+#### 执行取消
+```
+POST https://tkglobal.melon.com/reservation/glbCancelrenewal.htm
+
+参数: rsrvSeq, rsrvDtlNoStr=101, prodId, perfMainName, langCd=EN
+```
+
+---
+
+## 四、捡漏程序核心策略
+
+### 4.1 监控目标接口
+
+**推荐方案**: 使用 `block/summary.json` 接口监控各区块余票
+
+```
+POST /tktapi/product/block/summary.json
+参数: prodId, pocCode, scheduleNo
+
+监控逻辑:
+  for block in response.summary:
+      if block.realSeatCntlk > 0:
+          # 发现可用票！立即进入下单流程
+          trigger_purchase(block)
+```
+
+**备选方案**: 使用 `gradelist.json` 接口按座位等级监控
+
+```
+GET /tktapi/glb/product/schedule/gradelist.json
+参数: prodId, pocCode, scheduleNo
+
+监控逻辑:
+  for grade in response.seatGradelist:
+      if int(grade.realSeatCntlk) > 0:
+          trigger_purchase(grade)
+```
+
+### 4.2 JSONP 响应解析
+
+大部分 API 返回 JSONP 格式，需要剥离回调函数名:
+
+```python
+import re, json
+
+def parse_jsonp(text):
+    """将 JSONP 响应解析为 dict"""
+    match = re.search(r'\((.+)\);?\s*$', text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1))
+    return json.loads(text)  # 非JSONP直接解析
+```
+
+### 4.3 关键难点
+
+| 难点 | 说明 | 可能的解决方案 |
+|------|------|----------------|
+| 验证码 (CAPTCHA) | 选座前需要输入图形验证码 | OCR识别 / 第三方打码平台 / 人工介入 |
+| 排队系统 (NetFunnel) | 热门演出需要排队获取 key | 分析 NetFunnel JS 逻辑，模拟排队 |
+| 加密参数 (chk, encryptedSeatIds) | 多处使用加密token | 需要分析前端JS生成逻辑 |
+| 会话维持 | Cookie 过期需重新登录 | 定期刷新会话 / 检测登录状态 |
+| 支付自动化 | 支付涉及银行卡认证跳转 | 仅自动化到下单步骤，支付手动完成 |
+| 请求频率限制 | 过于频繁可能被封IP | 控制请求间隔，使用代理池 |
+
+### 4.4 实际数据示例
+
+**演出ID**: 212838 (排队HAR) / 212771 (购票HAR - QWER演唱会)
+**场次号**: 100001 / 100003
+**会员Key**: 1000570288 / 1003330177
+**座位示例**: 478_190 = 区块478的第190号座位 = 2层33区10列157番
+**价格**: 154,000韩元(票价) + 7,000韩元(手续费) = 161,000韩元
+
+---
+
+## 五、接口调用流程图
+
+```
+[登录] POST /login/login_proc.htm
+   ↓ (获取Cookie)
+[检查登录] POST /main/ajax/isLogin.json
+   ↓
+[查日期] GET /tktapi/glb/product/schedule/daylist.json
+   ↓
+[查场次] GET /tktapi/glb/product/schedule/timelist.json
+   ↓
+[查票价等级] GET /tktapi/glb/product/schedule/gradelist.json
+   ↓
+[★监控余票] POST /tktapi/product/block/summary.json  ←── 循环监控
+   ↓ (发现 realSeatCntlk > 0)
+[获取排队Key] GET /tktapi/glb/product/prodKey.json
+   ↓
+[进入预订] POST /reservation/popup/onestop.htm (带chk参数)
+   ↓
+[获取演出信息] POST /tktapi/product/informProdSch.json
+   ↓
+[验证销售状态] POST /tktapi_poc/performance/getProdSellState.json
+   ↓
+[获取座位地图] POST /tktapi/glb/product/getAreaMap.json
+   ↓
+[获取座位列表] GET /tktapi/product/seat/seatMapList.json
+   ↓
+[★验证码] POST /reservation/ajax/checkCaptcha.json (障碍)
+   ↓
+[锁定座位] POST /tktapi/glb/reservation/prodlimit.json
+   ↓
+[提交选座] POST /reservation/popup/stepTicket.htm
+   ↓
+[获取票种] POST /tktapi/glb/product/tickettype.json
+   ↓
+[价格检查] POST /tktapi/glb/reservation/pricelimit.json
+   ↓
+[获取配送/支付] POST /tktapi/glb/product/delivery.json
+   ↓
+[★保存订单] POST /tktapi/glb/reservation/save.json
+   ↓
+[支付初始化] POST /reservation/ajax/payInitForm.htm
+   ↓
+[跳转支付] → Kakao Pay → 银行卡认证 (需手动完成)
+```
+
+---
+
+## 六、给 DeepSeek 的协作说明
+
+本文档由 Claude Opus 4.6 基于实际抓包数据分析生成。请 DeepSeek 协助校验以下内容:
+
+1. **接口参数完整性**: 检查是否有遗漏的必要参数
+2. **JSONP 解析逻辑**: 确认回调函数剥离方案的可靠性
+3. **加密参数分析**: `chk`、`encryptedSeatIds` 等加密值的生成逻辑
+4. **NetFunnel 排队机制**: 是否有绕过或优化方案
+5. **验证码方案**: 推荐最适合的 OCR/打码方案
+6. **多线程策略**: 监控多个区块时的最佳线程分配方案
+7. **反检测建议**: 请求头、Cookie、IP 等方面的伪装策略
+
+项目 GitHub 地址: [私有仓库] melon-ticket
+技术栈: Python 3.11 + requests + asyncio
