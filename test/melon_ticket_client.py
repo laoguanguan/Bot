@@ -8,6 +8,7 @@ from typing import Optional, Dict, List, Any
 from datetime import datetime
 from curl_cffi import requests
 from datetime import datetime
+from playwright.sync_api import sync_playwright
 
 COOKIE_FILE = "melon_cookies.json"
 
@@ -26,7 +27,7 @@ class MelonTicketClient:
         self.session.impersonate = "chrome120"
         # 设置通用 Headers (模拟浏览器)
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh,ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://ticket.melon.com/",
@@ -50,6 +51,17 @@ class MelonTicketClient:
         """将当前 Session 的 Cookie 保存到本地文件"""
         cookies = self.session.cookies.get_dict()
         logger.debug(f"💾 准备保存的完整 Cookie: {cookies}")  # ← 加这行！
+        # for cookie in self.session.cookies:
+        #     # 打印看看每个 cookie 的 domain 属性
+        #     print(f"Cookie: {cookie.name}, Domain: {cookie.domain}")
+        pcid = self.session.cookies.get("PCID")
+        pc_pcid = self.session.cookies.get("PC_PCID")
+        fwb = self.session.cookies.get("_fwb")
+
+        # 4. 打印结果
+        print("PCID:", pcid)
+        print("PC_PCID:", pc_pcid)
+        print("_fwb:", fwb)
         if cookies:
             with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cookies, f)
@@ -74,6 +86,21 @@ class MelonTicketClient:
             logger.info("📂 未找到 Cookie 文件，需要重新登录")
         return False
 
+    def get_all_cookies_verbose(self, session):
+        """
+        暴力提取 session 中所有可能的 cookie，忽略 domain/path 过滤
+        """
+        cookies_list = []
+        
+        # curl_cffi 的 cookies 属性通常是一个 http.cookiejar.CookieJar 对象
+        # if hasattr(session, 'cookies') and session.cookies:
+        #     for cookie in session.cookies:
+        #         # 直接拼接 name=value
+        #         cookies_list.append(f"{cookie.name}={cookie.value}")
+        
+        # return ''; '.join(cookies_list)'
+        return ''
+    
     def _is_logged_in(self) -> bool:
         """
         验证当前 Cookie 是否有效
@@ -424,13 +451,16 @@ class MelonTicketClient:
                 if self.realSetCntlk:
                     get_prodkey_url = "https://tkglobal.melon.com/tktapi/glb/product/prodKey.json"
                     get_prodkey_params = {
-                        "callback":"scheduleList8",
+                        #"callback":"scheduleList8",
                         "prodId": self.prod_id,
                         "scheduleNo": self.scheduleNo,
                         "v":"1",
                         '_': str(int(time.time() * 1000))
                     }
                     # 测试发现使用网页的Cookie能有效,模仿浏览器却出现报错
+                    cookie_dict = self.session.cookies.get_dict()
+                    full_cookie_str = self.get_all_cookies_verbose(self.session)
+                    print(f" 提取到的完整 Cookie: {full_cookie_str}")
                     get_prokey_headers = {
                         #':authority': 'tkglobal.melon.com',  # requests 会自动忽略带冒号的伪头，但保留无妨
                         #':method': 'GET',
@@ -440,8 +470,8 @@ class MelonTicketClient:
                         'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
                         'Accept-Encoding': 'gzip, deflate, br, zstd',
                         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                        'Content-Type': 'application/json;',  # 虽然 GET 不需要，但有些服务端校验存在性
-                        # 'Cookie': self.session.cookies.get_dict(),
+                        # 'Content-Type': 'application/json;',  # 虽然 GET 不需要，但有些服务端校验存在性
+                        'Cookie': full_cookie_str,
                         'Priority': 'u=1, i',
                         'Referer': 'https://tkglobal.melon.com/performance/index.htm?langCd=EN&prodId=' + self.prod_id,
                         'Sec-Ch-Ua': '"Chromium";v="120", "Not-A.Brand";v="24", "Microsoft Edge";v="120"',
@@ -454,6 +484,7 @@ class MelonTicketClient:
                         'X-Requested-With': 'XMLHttpRequest'
                     }
                     
+                    logger.debug(f"Current cookies: {self.session.cookies.get_dict()}")
                     prodkey_resp = self.session.get(url=get_prodkey_url, params=get_prodkey_params, headers=get_prokey_headers)
                     if prodkey_resp.status_code != 200:
                         logger.warning(f"⚠️ 获取排队Key失败, 状态码: {prodkey_resp.status_code}, 返回内容: %s", prodkey_resp.text)
@@ -571,6 +602,28 @@ class MelonTicketClient:
     # ================= 主流程控制 =================
     def run_booking_flow(self, username, password, prod_id, proc_id):
         """串联所有步骤"""
+        # 0. 先访问首页
+        with sync_playwright() as p:
+            # 静默运行（不弹出浏览器）
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            
+            # 换成你的目标网址
+            page.goto("https://tkglobal.melon.com/main/index.htm?langCd=EN")
+            
+            # 获取所有 Cookie
+            cookies = page.context.cookies()
+            
+            # 提取你要的三个参数
+            result = {}
+            for c in cookies:
+                if c["name"] in ["PCID", "PC_PCID", "_fwb"]:
+                    result[c["name"]] = c["value"]
+            
+            print("获取成功：")
+            print(result)
+            browser.close()
+            
         # 1. 登录
         if not self.login(username, password):
             return
