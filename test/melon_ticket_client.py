@@ -26,9 +26,9 @@ class MelonTicketClient:
         self.session.impersonate = "chrome120"
         # 设置通用 Headers (模拟浏览器)
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Language": "zh-CN,zh,ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://ticket.melon.com/",
             "Origin": "https://ticket.melon.com"
         }
@@ -206,6 +206,55 @@ class MelonTicketClient:
             "v" : 1
         }
         return []
+    
+    # 获取 MemberKey 和 UserId 的接口
+    def _get_member_key_info(self) -> int:
+        """
+        获取用户的 MemberKey 和 UserId
+        这是登录后的第一步，后续接口调用都需要这个 UserId
+        """
+        url = "https://tkglobal.melon.com/member/getMemberKey.json"
+        try:
+            resp = self.session.post(url)
+            if resp.status_code == 200 :
+                # 尝试将响应解析为 JSON
+                json_data = resp.json()
+                # 关键判断
+                member_key = json_data.get("memberKey")
+                logger.info(f"✅ 获取 MemberKey 成功: {member_key}")
+        except Exception as e:
+            logger.error(f"💥 获取 MemberKey 请求异常: {e}")  
+            return None      
+        return member_key
+    
+    # buybuttonclick 接口，获取购票按钮点击后的关键信息（如订单草稿信息等）
+    def _get_buy_button_click_info(self) -> str:
+        buy_button_click_url = "https://tkglobal.melon.com/public/buyBtnClick.html"
+        buy_button_click_params = {
+            "pocID": "WP19",
+            "prodId": self.prod_id,
+            "memberKey": self.member_key,
+        }
+        
+        buy_button_click_headers = {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Content-Type": "application/json;",
+            "Referer": "https://tkglobal.melon.com/performance/index.htm?langCd=EN&prodId="+self.prod_id
+        }
+        try:
+            resp = self.session.get(buy_button_click_url, params=buy_button_click_params, headers=buy_button_click_headers)
+            if resp.status_code == 200 :
+                buy_html = resp.text
+                logger.info(f"✅ 获取 buybuttonclick 信息成功")
+                return buy_html
+            else:
+                logger.warning(f"⚠️ 获取购票按钮信息失败, 状态码: {resp.status_code}")
+                return {}
+        except Exception as e:
+            logger.error(f"💥 获取 buyclick 请求异常: {e}")  
+            return None      
+        return {}
+    
     # ================= 步骤 1: 登录与认证 (已重构) =================
     def login(self, username: str, password: str, otp_code: Optional[str] = None) -> bool:
         """
@@ -267,25 +316,6 @@ class MelonTicketClient:
             logger.error(f"💥 登录请求异常: {e}")
             return False
         
-    # ================= 步骤 1.1: 获取会员Key =================
-    def get_member_key_info(self) -> int:
-        """
-        获取用户的 MemberKey 和 UserId
-        这是登录后的第一步，后续接口调用都需要这个 UserId
-        """
-        url = "https://tkglobal.melon.com/member/getMemberKey.json"
-        try:
-            resp = self.session.post(url)
-            if resp.status_code == 200 :
-                # 尝试将响应解析为 JSON
-                json_data = resp.json()
-                # 关键判断
-                member_key = json_data.get("memberKey")
-        except Exception as e:
-            logger.error(f"💥 获取 MemberKey 请求异常: {e}")  
-            return None      
-        return member_key
-
     # ================= 步骤 2: 获取演出详情与场次 =================
     def get_performance_details(self, prod_id: str) -> int:
         
@@ -360,14 +390,14 @@ class MelonTicketClient:
         get_gradelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/gradelist.json"
         gradelist_params = {
             "callback": "scheduleList4",
-            "v":1,
             "prodId": self.prod_id,
             "pocCode": "SC0002",
             "scheduleNo": self.scheduleNo,
             "perfTypeCode": "GN0001",
-            "sellTypeCode": "ST0001",
+            "sellTypeCodeData": "ST0001",
             "langCd":"EN",
-            "seatCntDisplayYn":"N"
+            "seatCntDisplayYn":"N",
+            "v":1
         }
        
         
@@ -379,12 +409,17 @@ class MelonTicketClient:
             resultCode = gradelist.get("resultCode")
             
             if resultCode == "-1" :
-                logger.info("⚠️ 当前场次无余票")
+                resultMessage = gradelist.get("resultMessage")
+                logger.info("⚠️ 接口查询失败,返回报错提示 %s", resultMessage)
                 return None # 无余票返回[]可继续下次轮询
             else :
+                # 1.1 获取 MemberKey
+                self.member_key = self._get_member_key_info() 
+                self.button_html = self._get_buy_button_click_info()
+                
                 gradelistInfo = gradelist.get("data")
                 self.realSetCntlk = gradelistInfo["seatGradelist"][0]["realSeatCntlk"]
-                logger.info(f"✅ 演出详情获取成功！余票数量: {len(self.realSetCntlk)}")
+                logger.info(f"✅ 余票数量: {len(self.realSetCntlk)}")
                 # 查询是否需要排队，获取排队KEY
                 if self.realSetCntlk:
                     get_prodkey_url = "https://tkglobal.melon.com/tktapi/glb/product/prodKey.json"
@@ -392,17 +427,52 @@ class MelonTicketClient:
                         "callback":"scheduleList8",
                         "prodId": self.prod_id,
                         "scheduleNo": self.scheduleNo,
-                        "v":"1"
+                        "v":"1",
+                        '_': str(int(time.time() * 1000))
                     }
-                    prodkey_resp = self.session.get(get_prodkey_url, params=get_prodkey_params)
+                    # 测试发现使用网页的Cookie能有效,模仿浏览器却出现报错
+                    get_prokey_headers = {
+                        #':authority': 'tkglobal.melon.com',  # requests 会自动忽略带冒号的伪头，但保留无妨
+                        #':method': 'GET',
+                        #':path': '/tktapi/glb/product/prodKey.json?callback=scheduleList8&prodId=212811&scheduleNo=100001&v=1&_=' + get_prodkey_params['_'],
+                        #':scheme': 'https',
+
+                        'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
+                        'Accept-Encoding': 'gzip, deflate, br, zstd',
+                        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+                        'Content-Type': 'application/json;',  # 虽然 GET 不需要，但有些服务端校验存在性
+                        # 'Cookie': self.session.cookies.get_dict(),
+                        'Priority': 'u=1, i',
+                        'Referer': 'https://tkglobal.melon.com/performance/index.htm?langCd=EN&prodId=' + self.prod_id,
+                        'Sec-Ch-Ua': '"Chromium";v="120", "Not-A.Brand";v="24", "Microsoft Edge";v="120"',
+                        'Sec-Ch-Ua-Mobile': '?0',
+                        'Sec-Ch-Ua-Platform': '"Windows"',
+                        'Sec-Fetch-Dest': 'empty',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'same-origin',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    }
+                    
+                    prodkey_resp = self.session.get(url=get_prodkey_url, params=get_prodkey_params, headers=get_prokey_headers)
+                    if prodkey_resp.status_code != 200:
+                        logger.warning(f"⚠️ 获取排队Key失败, 状态码: {prodkey_resp.status_code}, 返回内容: %s", prodkey_resp.text)
+                        return [self.realSetCntlk] # 无法获取排队Key时，继续返回余票信息
+                    
                     prodkey_data = self.parse_jsonp("scheduleList8", prodkey_resp.text)
                     resultCode = prodkey_data["code"]
+                    logger.info(f"✅ 获取排队Key: %s", prodkey_data.get("key"))
                     prodkey = prodkey_data["key"]   # 排密钥(加密)
                     nflActId = prodkey_data["nflActId"] # NetFunnel 活动ID
                     trafficCtrlYn = prodkey_data["trafficCtrlYn"] # Y=需要排队 N=不需要
                     if trafficCtrlYn == "Y":
-                    
+                        # 进入排队
+                        logger.info("⏳ 需要排队，正在进入排队...")
+                        return []
                     else:
+                        # 不需要排队，直接返回余票信息
+                        logger.info("🚀 不需要排队，直接返回余票信息")
+                        return [self.realSetCntlk]
                     
                 return [self.realSetCntlk]
                 
@@ -411,6 +481,11 @@ class MelonTicketClient:
             return []
 
     # ================= 步骤 3.1: 获取演出的详细信息 =================
+    def get_ticket():
+        # 浏览器har分析GetTicket操作，需要先getmemberkey/buybuttonclick/prokey.json
+        
+        return 
+    
     # ================= 步骤 4: 锁定座位 (选座) =================
     def select_seats(self, seat_ids: Optional[List[str]] = None) -> bool:
         """
@@ -499,8 +574,6 @@ class MelonTicketClient:
         # 1. 登录
         if not self.login(username, password):
             return
-        # 1.1 获取 MemberKey
-        self.member_key = self.get_member_key_info()  
         
         # 2. 获取场次
         self.proc_id = proc_id
@@ -539,6 +612,7 @@ class MelonTicketClient:
 
 # 使用示例
 if __name__ == "__main__":
+    
     client = MelonTicketClient()
     
     # 配置信息
