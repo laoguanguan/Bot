@@ -7,7 +7,6 @@ import logging
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 from curl_cffi import requests
-from datetime import datetime
 from playwright.sync_api import sync_playwright
 
 COOKIE_FILE = "melon_cookies.json"
@@ -54,14 +53,14 @@ class MelonTicketClient:
         # for cookie in self.session.cookies:
         #     # 打印看看每个 cookie 的 domain 属性
         #     print(f"Cookie: {cookie.name}, Domain: {cookie.domain}")
-        pcid = self.session.cookies.get("PCID")
-        pc_pcid = self.session.cookies.get("PC_PCID")
-        fwb = self.session.cookies.get("_fwb")
+        # pcid = self.session.cookies.get("PCID")
+        # pc_pcid = self.session.cookies.get("PC_PCID")
+        # fwb = self.session.cookies.get("_fwb")
 
         # 4. 打印结果
-        print("PCID:", pcid)
-        print("PC_PCID:", pc_pcid)
-        print("_fwb:", fwb)
+        # print("PCID:", pcid)
+        # print("PC_PCID:", pc_pcid)
+        # print("_fwb:", fwb)
         if cookies:
             with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cookies, f)
@@ -343,6 +342,8 @@ class MelonTicketClient:
             logger.error(f"💥 登录请求异常: {e}")
             return False
         
+    # ================= 使用playwright进行登录，模拟 =================
+    # def login_by_playwright(self, username: str, password: str, otp_code: Optional[str] = None) -> bool:
     # ================= 步骤 2: 获取演出详情与场次 =================
     def get_performance_details(self, prod_id: str) -> int:
         
@@ -602,34 +603,11 @@ class MelonTicketClient:
     # ================= 主流程控制 =================
     def run_booking_flow(self, username, password, prod_id, proc_id):
         """串联所有步骤"""
-        # 0. 先访问首页
-        with sync_playwright() as p:
-            # 静默运行（不弹出浏览器）
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            
-            # 换成你的目标网址
-            page.goto("https://tkglobal.melon.com/main/index.htm?langCd=EN")
-            
-            # 获取所有 Cookie
-            cookies = page.context.cookies()
-            
-            # 提取你要的三个参数
-            result = {}
-            for c in cookies:
-                if c["name"] in ["PCID", "PC_PCID", "_fwb"]:
-                    result[c["name"]] = c["value"]
-            
-            print("获取成功：")
-            print(result)
-            browser.close()
-            
         # 1. 登录
         if not self.login(username, password):
             return
         
         # 2. 获取场次
-        self.proc_id = proc_id
         if not self.get_performance_details(prod_id):
             return
             
@@ -674,5 +652,5 @@ if __name__ == "__main__":
     # PROD_ID = "212838" # 替换为真实的演出 ID
     PROD_ID = "212811"
     PROC_ID = "WP19"
-    
+    client.proc_id = PROC_ID
     client.run_booking_flow(USER, PASS, PROD_ID, PROC_ID)
