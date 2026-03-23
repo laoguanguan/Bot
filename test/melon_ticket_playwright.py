@@ -36,14 +36,40 @@ class MelonPlayWrightManager:
             locale="en-US",
             timezone_id="Asia/Seoul" # Melon 是韩国网站，时区设为首尔
         )
-        self.page = await self.context.new_page()
+        # self.page = await self.context.new_page()
         
-        login_resq = await self.browser.post(
+        # 1.登录
+        resp = await self.context.post(
             "https://gmember.melon.com/login/login_proc.htm"，
-            
+            params={
+                rtnUrl": "https://tkglobal.melon.com/main/index.htm",
+                "langCd": "EN",
+                "email": username,
+                "pwd": password
+            }
         )
         
-        return self.page
+        # 判断登录结果
+        if resp.status == 302 or (resp.status == 200 and "tkgglobal.melon.com" in resp.url):
+            if self._is_logged_in():
+                logger.info("? 账号密码登录成功！")
+                # 登录成功后，立即保存 Cookie
+                self._save_cookies()
+                return True
+            else:
+                logger.warning("?? 收到成功响应但未获取到 Cookie，登录可能未生效。")
+                return False
+        else:
+            logger.error(f"? 登录失败。状态码: {resp.status}, 当前 URL: {resp.url}")
+            return False
+
+        except Exception as e:
+            logger.error(f"? 登录请求异常: {e}")
+            return False
+        finally:
+            browser.close()
+        
+        return
     
     async def close(self):
         """关闭浏览器"""
