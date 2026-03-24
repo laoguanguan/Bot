@@ -460,38 +460,36 @@ class MelonTicketClient:
                     }
                     # 测试发现使用网页的Cookie能有效,模仿浏览器却出现报错
                     cookie_dict = self.session.cookies.get_dict()
-                    full_cookie_str = self.get_all_cookies_verbose(self.session)
+                    # full_cookie_str = self.get_all_cookies_verbose(self.session)
+                    full_cookie_str = 'PCID=17730672944097519966510; PC_PCID=17730672944097519966510; _fwb=3PkoBzj9Ablg1IdHJulNU.1773067714367; TKT_POC_ID=WP19; i18next=EN; NetFunnel_ID=WP15; MAC_T="rQKgh39KXlZeEU2P5rH2mlXXO+7kV0GgNSCHBCBKFjsDpqX/Ms2ZdSz9nM9LRPB7aEwYmnPuR3p/JHxYe2mLkZ8vMcZ/o0hm8oQKfFlt7Wk="; keyCookie_T=1018478961; JSESSIONID=CB4576A543065361E10BA4E04BC030B2; wcs_bt=s_322bdbd6fd48:1774370245'
                     print(f" 提取到的完整 Cookie: {full_cookie_str}")
                     get_prokey_headers = {
-                        #':authority': 'tkglobal.melon.com',  # requests 会自动忽略带冒号的伪头，但保留无妨
-                        #':method': 'GET',
-                        #':path': '/tktapi/glb/product/prodKey.json?callback=scheduleList8&prodId=212811&scheduleNo=100001&v=1&_=' + get_prodkey_params['_'],
-                        #':scheme': 'https',
-
-                        'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
-                        'Accept-Encoding': 'gzip, deflate, br, zstd',
-                        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-                        # 'Content-Type': 'application/json;',  # 虽然 GET 不需要，但有些服务端校验存在性
-                        'Cookie': full_cookie_str,
-                        'Priority': 'u=1, i',
-                        'Referer': 'https://tkglobal.melon.com/performance/index.htm?langCd=EN&prodId=' + self.prod_id,
-                        'Sec-Ch-Ua': '"Chromium";v="120", "Not-A.Brand";v="24", "Microsoft Edge";v="120"',
-                        'Sec-Ch-Ua-Mobile': '?0',
-                        'Sec-Ch-Ua-Platform': '"Windows"',
-                        'Sec-Fetch-Dest': 'empty',
-                        'Sec-Fetch-Mode': 'cors',
-                        'Sec-Fetch-Site': 'same-origin',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
-                        'X-Requested-With': 'XMLHttpRequest'
+                        # 'Accept': 'text/javascript, application/javascript, application/ecmascript, application/x-ecmascript, */*; q=0.01',
+                        # 'Accept-Encoding': 'gzip, deflate, br, zstd',
+                        # 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+                        # # 'Content-Type': 'application/json;',  # 虽然 GET 不需要，但有些服务端校验存在性
+                        # 'Cookie': full_cookie_str,
+                        # 'Priority': 'u=1, i',
+                        # 'Referer': 'https://tkglobal.melon.com/performance/index.htm?langCd=EN&prodId=' + self.prod_id,
+                        # 'Sec-Ch-Ua': '"Chromium";v="120", "Not-A.Brand";v="24", "Microsoft Edge";v="120"',
+                        # 'Sec-Ch-Ua-Mobile': '?0',
+                        # 'Sec-Ch-Ua-Platform': '"Windows"',
+                        # 'Sec-Fetch-Dest': 'empty',
+                        # 'Sec-Fetch-Mode': 'cors',
+                        # 'Sec-Fetch-Site': 'same-origin',
+                        # 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+                        # 'X-Requested-With': 'XMLHttpRequest'
+                        'Cookie': full_cookie_str, #先使用真实的浏览器替代
                     }
                     
                     logger.debug(f"Current cookies: {self.session.cookies.get_dict()}")
                     prodkey_resp = self.session.get(url=get_prodkey_url, params=get_prodkey_params, headers=get_prokey_headers)
+                    prodkey_resp.raise_for_status()
                     if prodkey_resp.status_code != 200:
                         logger.warning(f"⚠️ 获取排队Key失败, 状态码: {prodkey_resp.status_code}, 返回内容: %s", prodkey_resp.text)
                         return [self.realSetCntlk] # 无法获取排队Key时，继续返回余票信息
                     
-                    prodkey_data = self.parse_jsonp("scheduleList8", prodkey_resp.text)
+                    prodkey_data = prodkey_resp.json()
                     resultCode = prodkey_data["code"]
                     logger.info(f"✅ 获取排队Key: %s", prodkey_data.get("key"))
                     prodkey = prodkey_data["key"]   # 排密钥(加密)
