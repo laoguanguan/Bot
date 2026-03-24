@@ -1,80 +1,96 @@
 import time
 import os
+import logging
 from typing import Optional, Dict, List, Any
 from datetime import datetime
-from playwright.sync_api import sync_playwright
+from playwright.async_api import Browser, BrowserContext, Page, Response, async_playwright
+import asyncio
+# é…ç½®æ—¥å¿—
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class MelonPlayWrightManager:
     def __init__(self):
-        self.headless = True
+        self.headless = False
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
-        self.cookies : Optional[Cookie] = None
+        self.cookies : List[Dict] = []
+        
+        # ç™»å½•è´¦å·å¯†ç 
+        self.username = "790877095@qq.com"
+        self.password = "guanhr2728836"
+        
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh,ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://ticket.melon.com/",
+            "Origin": "https://ticket.melon.com"
+        }
+        
     async def start_browser(self):
-        """Æô¶¯ä¯ÀÀÆ÷"""
-        playwright = await async_playwright().start()
-        # Æô¶¯ Chromium£¬Éú²ú»·¾³½¨Òé headless=True£¬µ÷ÊÔÊ± False
-        self.browser = await playwright.chromium.launch(
-            headless=self.headless,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-accelerated-2d-canvas",
-                "--no-first-run",
-                "--no-zygote",
-                "--disable-gpu"
-            ]
-        )
-        
-        # ´´½¨ÉÏÏÂÎÄ£¬ÉèÖÃ±ê×¼µÄ User-Agent (±ØĞëÓë curl_cffi Ä£ÄâµÄ°æ±¾Ò»ÖÂ)
-        # ÕâÀïÄ£Äâ Chrome 120
-        self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            locale="en-US",
-            timezone_id="Asia/Seoul" # Melon ÊÇº«¹úÍøÕ¾£¬Ê±ÇøÉèÎªÊ×¶û
-        )
-        # self.page = await self.context.new_page()
-        
-        # 1.µÇÂ¼
-        resp = await self.context.post(
-            "https://gmember.melon.com/login/login_proc.htm"£¬
-            params={
-                rtnUrl": "https://tkglobal.melon.com/main/index.htm",
-                "langCd": "EN",
-                "email": username,
-                "pwd": password
-            }
-        )
-        
-        # ÅĞ¶ÏµÇÂ¼½á¹û
-        if resp.status == 302 or (resp.status == 200 and "tkgglobal.melon.com" in resp.url):
-            if self._is_logged_in():
-                logger.info("? ÕËºÅÃÜÂëµÇÂ¼³É¹¦£¡")
-                # µÇÂ¼³É¹¦ºó£¬Á¢¼´±£´æ Cookie
-                self._save_cookies()
-                return True
-            else:
-                logger.warning("?? ÊÕµ½³É¹¦ÏìÓ¦µ«Î´»ñÈ¡µ½ Cookie£¬µÇÂ¼¿ÉÄÜÎ´ÉúĞ§¡£")
-                return False
-        else:
-            logger.error(f"? µÇÂ¼Ê§°Ü¡£×´Ì¬Âë: {resp.status}, µ±Ç° URL: {resp.url}")
-            return False
+        async with async_playwright() as p:
+            self.browser = await p.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--no-first-run",
+                    "--no-zygote",
+                    "--disable-gpu"
+                ]
+            )
+            
+            # 1. ç¡®ä¿ä½ å·²ç»æœ‰ä¸€ä¸ªå¸¦æ­£ç¡® UA å’Œ Referer çš„ context
+            self.context = await self.browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+                timezone_id="Asia/Seoul",
+            )
+            
+            
+            # page = await self.context.new_page()
+            # login_url = "https://gmember.melon.com/login/login_form.htm" # æ³¨æ„æ˜¯ç™»å½•é¡µï¼Œä¸æ˜¯å¤„ç†é¡µ
+            # await page.goto(login_url)
+            # await page.wait_for_load_state("networkidle") 
+            print(f"âœ… å·²è®¿é—®ç™»å½•é¡µï¼Œå½“å‰ Cookie: {await self.context.cookies()}")
+            
+            # 2. å‘èµ· POST è¯·æ±‚ï¼ˆæ³¨æ„æ˜¯ async + awaitï¼‰
+            resp: Response = await self.context.request.post(
+                "https://gmember.melon.com/login/login_proc.htm",
+                data={  # ğŸ‘ˆ å¯¹åº” requests çš„ data=ï¼Œä¼šè‡ªåŠ¨ç¼–ç ä¸º form-urlencoded
+                    "rtnUrl": "https://tkglobal.melon.com/main/index.htm",
+                    "langCd": "EN",
+                    "email": self.username,
+                    "pwd": self.password
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": "https://tkglobal.melon.com/login/login.htm", 
+                    "User-Agent": self.headers["User-Agent"]
+                }
+            )
 
-        except Exception as e:
-            logger.error(f"? µÇÂ¼ÇëÇóÒì³£: {e}")
-            return False
-        finally:
-            browser.close()
+            # 3. æ£€æŸ¥å“åº”
+            if resp.status == 302 or (resp.status == 200 and "tkkglobal.melon.com" in resp.url):
+                print("âœ… ç™»å½•æˆåŠŸï¼")
+            else:
+                print(f"âŒ ç™»å½•å¤±è´¥ï¼ŒçŠ¶æ€ç : {resp.status}")
         
         return
     
     async def close(self):
-        """¹Ø±Õä¯ÀÀÆ÷"""
+       
         if self.browser:
             await self.browser.close()
             self.browser = None
             self.context = None
             self.page = None
+            
+if __name__ == "__main__":
+    manager = MelonPlayWrightManager()
+    asyncio.run(manager.start_browser())
