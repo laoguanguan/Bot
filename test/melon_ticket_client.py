@@ -437,6 +437,7 @@ class MelonTicketClient:
             datalistInfo = datalist.get("data")
             # prefDay 在后续传参中需要使用
             prefDay = datalistInfo["perfDaylist"][0]["perfDay"] # @todo 这里默认选择第一个日期，实际使用中可能需要根据用户输入选择
+            self.preDayList = datalistInfo["perfDaylist"]
             self.perfDay = prefDay
             # ★ 场次编号，后续所有流程都需要
             get_timelist_url = "https://tkglobal.melon.com/tktapi/glb/product/schedule/timelist.json"
@@ -571,6 +572,7 @@ class MelonTicketClient:
         area_da_sb_list = area_resp_data["seatData"]["da"]["sb"]
         # 进去后可能座位没了，加个循环
         try:
+            has_check_seat_set = set()
             for area_da_sb in area_da_sb_list:
                 # if area_da_sb["iv"] == "1": # iv判断不了区域是否有空位，还要研究
                 #     seat_block_id = area_da_sb["sbid"]
@@ -601,6 +603,8 @@ class MelonTicketClient:
                     for seat in seatList:
                         # @todo 查找未被锁定的座位，加速关键，当前的复杂度为o(n),需要优化
                         if seat["sid"] is None or seat["sid"] == "null": continue
+                        if seat["sid"] in has_check_seat_set: continue
+                        has_check_seat_set.add(seat["sid"])
                         self.seat_block_id = seat_block_id
                         self.seat_id = seat["sid"]
                         self.sntv = sntv
@@ -646,8 +650,8 @@ class MelonTicketClient:
                         # summary.json 的 sntvlist?
                         'stvn_view_list': '1,B1;1,B2;1,C1;1,C2;1,C3;1,D1;1,D2;1,G;1,H;2,A2;2,A3;2,A4;2,C1;2,C2;2,C3;2,E2;2,E3;2,E4;Floor,A;Floor,B',
                         'mapClickYn': 'Y',
-                        'seatid': f"{self.seat_block_id}_{self.seat_id}",
-                        'chkcapt': '/PUqT8SOS0PcBjye30GTZGsNXOfSHZS+hVEX9RlKbYs='  # 需校验动态获取
+                        'seatid': self.seat_id,
+                        'chkcapt': 'akTeSLg2AeeMH+SGKiacIDAvFN6yFXc5QOgUdNrK7Jo='  # 需校验动态获取
                     },
                     headers=self.cookie_headers
                     )
@@ -660,13 +664,15 @@ class MelonTicketClient:
                 prodlimit_data = parse_jsonp("jQuery360029390494093780284_1775304449633", resp.text)
                 
                 # TODO: 检查锁座结果
-                if prodlimit_data.get("success"):
+                if prodlimit_data.get("result") == "0000":
                     self.ticket_seat_info = prodlimit_data["data"] # 保存 lockId 或 seatInfo
                     logger.info("✅ 座位锁定成功！")
                     return True
+                elif prodlimit_data.get("code") == 'T0002':
+                    logger.warning(f"⚠️ 需要验证: {prodlimit_data.get('message')}")
+                    return False
                 else:
                     logger.warning(f"⚠️ 锁座失败: {prodlimit_data.get('message')}")
-                    return False
                 
         except Exception as e:
             logger.error(f"💥 锁座请求异常: {e}")
