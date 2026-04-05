@@ -641,7 +641,7 @@ class MelonTicketClient:
                     return False
                 
                 logger.info(f"🪑 正在锁定座位: {self.seat_id}")
-                self.chkcapt = 'cyroX6O0hMNxyuDOo7kKr4Pf+mihAJxv6y/1m1b2JyA='
+                self.chkcapt = 'TphE3VlFaZUH2qucXDITPPauT/JKyyr/G9SJ2qw13vc='
                 # 座位锁定 (prodlimit)
                 resp = self.session.post(
                     url="https://tkglobal.melon.com/tktapi/glb/reservation/prodlimit.json", 
@@ -686,6 +686,7 @@ class MelonTicketClient:
                 # TODO: 检查锁座结果
                 if prodlimit_data.get("result") == "0000":
                     self.encryptedSeatIds = prodlimit_data["encryptedSeatIds"] # 可能需要加密的座位ID
+                    self.interlockTid = prodlimit_data["interlockTid"] # 锁座后续步骤需要的参数
                     logger.info("✅ 座位锁定成功！")
                     return True
                 elif prodlimit_data.get("code") == 'T0002':
@@ -705,6 +706,9 @@ class MelonTicketClient:
             logger.error("❌ 没有锁定的座位信息，无法创建订单")
             return None
        
+        if not self.step_tick():  # 提交选座信息，生成订单草稿
+            logger.error("❌ 提交选座信息失败，无法创建订单")
+            return None
         
         if not self.ticket_type():  # 提交选座信息，生成订单草稿
             return None
@@ -774,6 +778,7 @@ class MelonTicketClient:
             'flplanTypeCode': 'DR0002',
             'seattypeCode': 'SE0001',
             'encryptedSeatIds': self.encryptedSeatIds,
+            'interlockTid': self.interlockTid,
             'seatIds': self.seat_id,
         }
         headers = {
@@ -825,7 +830,7 @@ class MelonTicketClient:
             'seatId': self.seat_id,
         }
         try:
-            resp = self.session.post(url, params=params, headers=self.cookie_headers)
+            resp = self.session.post(url, params=params)
             if resp.status_code == 200:
                 resp.raise_for_status()
                 ticket_type_data = parse_jsonp("jQuery360036452094407238755_1775385067625", resp.text)
