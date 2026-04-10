@@ -92,6 +92,7 @@ class MelonTicketClient:
         # 订单信息
         self.payNo = None      # 支付单号
         self.rsrvSeq = None    # 预订序列号
+        self.interlockTypeCode = ""  # 锁座后续步骤需要的参数
         
         # TODO: 根据文档填入基础 URL
         self.BASE_URL = "https://tkglobal.melon.com" # 示例，需替换为文档中的真实 Base URL
@@ -1113,8 +1114,7 @@ class MelonTicketClient:
             if resp.status_code == 200:
                 logger.info("✅ 支付初始化成功，请在弹出页面完成支付")
                 # 从响应中提取支付跳转 URL（通常在 iframe src 中）
-                import re as _re
-                match = _re.search(r'src="(https://[^"]+)"', resp.text)
+                match = re.search(r'src="(https://[^"]+)"', resp.text)
                 if match:
                     pay_url = match.group(1)
                     logger.info(f"💳 支付链接: {pay_url}")
